@@ -10,6 +10,7 @@
 - Максимум 50 записей, цветовые группы по 10
 - Легенда-подсказка: диапазоны частот (РФ), назначение, модуляция, шаг
 - freq отображается с разделением по 3 знака (пробелом), в файл пишется числом
+- Множественное выделение и массовая замена значений (кнопка "✏ Массовое…")
 """
 
 import json
@@ -97,9 +98,6 @@ def mode_from_label(label: str):
         if label.upper() == name: return code
     return label
 
-def mode_short(code):
-    return MODE_MAP.get(code, str(code)) if isinstance(code, int) else str(code)
-
 
 # ---------- step_index ----------
 def step_to_label(code):
@@ -113,9 +111,6 @@ def step_from_label(label: str):
     for code, name in STEP_MAP.items():
         if label == name: return code
     return label
-
-def step_short(code):
-    return STEP_MAP.get(code, str(code)) if isinstance(code, int) else str(code)
 
 
 # ---------- agc_mode ----------
@@ -131,9 +126,6 @@ def agc_from_label(label: str):
         if label.upper() == name.upper(): return code
     return label
 
-def agc_short(code):
-    return AGC_MAP.get(code, str(code)) if isinstance(code, int) else str(code)
-
 
 # ---------- sql_en ----------
 def sqlen_to_label(code):
@@ -148,26 +140,20 @@ def sqlen_from_label(label: str):
         if label.upper() == name.upper(): return code
     return label
 
-def sqlen_short(code):
-    return SQL_EN_MAP.get(code, str(code)) if isinstance(code, int) else str(code)
-
 
 # ---------- Форматирование freq ----------
 _FREQ_SEPARATORS = (" ", "\u00A0", "\u202F", "\u2009", ",")
 
 def format_int_thousands(n):
-    """14160000 -> '14 160 000'. Работает и с отрицательными числами."""
     if n is None or isinstance(n, bool):
         return str(n) if n is not None else ""
     try:
         n_int = int(n)
     except (TypeError, ValueError):
         return str(n)
-    s = f"{n_int:,}".replace(",", " ")
-    return s
+    return f"{n_int:,}".replace(",", " ")
 
 def parse_int_thousands(s):
-    """'14 160 000' -> 14160000. Если распарсить нельзя — вернуть исходную строку."""
     if s is None:
         return None
     if isinstance(s, (int, float)) and not isinstance(s, bool):
@@ -175,7 +161,6 @@ def parse_int_thousands(s):
     t = str(s).strip()
     for ch in _FREQ_SEPARATORS:
         t = t.replace(ch, "")
-    # допускаем ведущий минус
     try:
         return int(t)
     except ValueError:
@@ -237,6 +222,184 @@ def save_file(path: Path, records):
             f.write("\n")
 
 
+# ---------- Диалог массового редактирования ----------
+class BulkEditDialog(tk.Toplevel):
+    """Диалог: выбрать поля и задать новые значения для всех выделенных записей."""
+
+    # порядок полей в диалоге: сначала видимые, потом скрытые
+    VISIBLE_ORDER = [
+        "name", "freq", "mode", "step_index", "agc_mode",
+        "agc_thresh_dB", "agc_gain_dB", "skip_scan",
+        "sql_en", "sql_thresh",
+    ]
+    HIDDEN_ORDER = [
+        "page", "filter_type", "lna_grid", "mixer_gr",
+        "rf_gain", "lna_en", "ssbtype", "pan_wide",
+        "res_1", "res_2", "res_3", "res_4", "res_5",
+    ]
+
+    def __init__(self, parent, count, on_apply):
+        super().__init__(parent)
+        self.title(f"Массовое редактирование ({count} записей)")
+        self.geometry("640x620")
+        self.transient(parent)
+        self.grab_set()
+
+        self.on_apply = on_apply
+
+        top = ttk.Frame(self)
+        top.pack(fill=tk.X, padx=8, pady=6)
+        ttk.Label(
+            top,
+            text=f"Будет изменено записей: {count}.\n"
+                 "Отметьте поля, которые нужно заменить, и задайте новые значения.",
+        ).pack(anchor="w")
+
+        # управление показом скрытых
+        self.show_hidden = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            top, text="Показывать скрытые поля",
+            variable=self.show_hidden, command=self._render,
+        ).pack(anchor="w", pady=(6, 0))
+
+        # прокручиваемая область с чекбоксами и полями
+        body = ttk.Frame(self)
+        body.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+
+        self._canvas = tk.Canvas(body, borderwidth=0, highlightthickness=0)
+        vsb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._inner = ttk.Frame(self._canvas)
+        self._inner_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
+        self._inner.bind("<Configure>",
+                         lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind("<Configure>",
+                          lambda e: self._canvas.itemconfigure(self._inner_id, width=e.width))
+
+        # для каждого поля — свои переменные
+        self.field_enabled = OrderedDict()   # key -> BooleanVar
+        self.field_value = OrderedDict()     # key -> StringVar
+        self.field_widgets = OrderedDict()   # key -> widget
+
+        # кнопки
+        btns = ttk.Frame(self)
+        btns.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Button(btns, text="Применить", command=self._on_apply).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="Отмена", command=self.destroy).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(btns, text="Ничего не выбрано / Снять всё",
+                   command=self._clear_all).pack(side=tk.LEFT)
+
+        self._render()
+
+    def _all_keys(self):
+        keys = list(self.VISIBLE_ORDER)
+        if self.show_hidden.get():
+            keys += self.HIDDEN_ORDER
+        return keys
+
+    def _render(self):
+        for w in self._inner.winfo_children():
+            w.destroy()
+        self.field_widgets.clear()
+
+        keys = self._all_keys()
+        for row, k in enumerate(keys):
+            is_hidden = k in self.HIDDEN_ORDER
+
+            # чекбокс
+            if k not in self.field_enabled:
+                self.field_enabled[k] = tk.BooleanVar(value=False)
+            if k not in self.field_value:
+                self.field_value[k] = tk.StringVar(value="")
+
+            cb = ttk.Checkbutton(self._inner, text="",
+                                 variable=self.field_enabled[k],
+                                 command=self._on_toggle_field)
+            cb.grid(row=row, column=0, sticky="w", padx=(0, 4), pady=2)
+
+            lbl_fg = "gray" if is_hidden else "black"
+            ttk.Label(self._inner, text=k, width=16, anchor="w",
+                      foreground=lbl_fg
+                      ).grid(row=row, column=1, sticky="w", padx=(0, 6), pady=2)
+
+            # поле значения — по типу
+            if k == "mode":
+                widget = ttk.Combobox(
+                    self._inner, textvariable=self.field_value[k], state="readonly",
+                    values=[mode_to_label(c) for c in MODE_MAP])
+            elif k == "step_index":
+                widget = ttk.Combobox(
+                    self._inner, textvariable=self.field_value[k], state="readonly",
+                    values=[step_to_label(c) for c in STEP_MAP])
+            elif k == "agc_mode":
+                widget = ttk.Combobox(
+                    self._inner, textvariable=self.field_value[k], state="readonly",
+                    values=[agc_to_label(c) for c in AGC_MAP])
+            elif k == "sql_en":
+                widget = ttk.Combobox(
+                    self._inner, textvariable=self.field_value[k], state="readonly",
+                    values=[sqlen_to_label(c) for c in SQL_EN_MAP])
+            elif k == "name":
+                widget = ttk.Entry(self._inner, textvariable=self.field_value[k])
+                # та же валидация 8 символов
+                vcmd = (self.register(lambda p: len(p) <= NAME_MAX_LEN), "%P")
+                widget.configure(validate="key", validatecommand=vcmd)
+            elif k == "freq":
+                widget = ttk.Entry(self._inner, textvariable=self.field_value[k])
+                vcmd = (self.register(self._validate_freq_input), "%P")
+                widget.configure(validate="key", validatecommand=vcmd)
+            else:
+                widget = ttk.Entry(self._inner, textvariable=self.field_value[k])
+
+            widget.grid(row=row, column=2, sticky="ew", pady=2)
+            self.field_widgets[k] = widget
+
+        self._inner.columnconfigure(2, weight=1)
+
+        # подсказка внизу
+        hint = ttk.Label(
+            self._inner,
+            text="Будут изменены только отмеченные поля. Пустое значение — ввести пустую строку.\n"
+                 "Для mode/step_index/agc_mode/sql_en выберите из списка. "
+                 "page всё равно пересчитается автоматически.",
+            foreground="gray", wraplength=560, justify="left")
+        hint.grid(row=len(keys), column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+    @staticmethod
+    def _validate_freq_input(proposed: str):
+        if proposed == "":
+            return True
+        cleaned = proposed
+        for ch in _FREQ_SEPARATORS:
+            cleaned = cleaned.replace(ch, "")
+        if cleaned == "":
+            return True
+        return cleaned.lstrip("-").isdigit()
+
+    def _on_toggle_field(self):
+        # можно оставить пустым — просто визуальное включение поля
+        pass
+
+    def _clear_all(self):
+        for k, v in self.field_enabled.items():
+            v.set(False)
+
+    def _on_apply(self):
+        changes = OrderedDict()
+        for k in self._all_keys():
+            if self.field_enabled[k].get():
+                changes[k] = self.field_value[k].get()
+        if not changes:
+            messagebox.showinfo("Массовое редактирование",
+                                "Не отмечено ни одного поля для замены.")
+            return
+        self.on_apply(changes)
+        self.destroy()
+
+
 # ---------- GUI ----------
 class Editor(tk.Tk):
     def __init__(self):
@@ -267,7 +430,8 @@ class Editor(tk.Tk):
         ttk.Button(toolbar, text="Вверх", command=lambda: self.move(-1)).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(toolbar, text="Вниз", command=lambda: self.move(+1)).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        ttk.Button(toolbar, text="📖 Легенда", command=self.show_legend).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="✏ Массовое…", command=self.open_bulk_edit).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="📖 Легенда", command=self.show_legend).pack(side=tk.LEFT, padx=(8, 0))
 
         self._hidden_btn = ttk.Checkbutton(
             toolbar, text="👁 Скрытые поля",
@@ -284,7 +448,8 @@ class Editor(tk.Tk):
         paned.add(left, weight=1)
 
         cols = ("#", "name", "page", "freq", "mode", "step", "agc", "sql", "sql_thresh")
-        self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(left, columns=cols, show="headings",
+                                 selectmode="extended")   # ← множественное выделение
         widths = (40, 140, 50, 130, 70, 140, 90, 70, 100)
         headers = ("#", "name", "page", "freq", "mode", "step", "agc", "sql", "sql_thresh")
         for c, h, w in zip(cols, headers, widths):
@@ -314,14 +479,75 @@ class Editor(tk.Tk):
         ttk.Label(self, textvariable=self.status, anchor="w", relief=tk.SUNKEN
                   ).pack(side=tk.BOTTOM, fill=tk.X)
 
+    # --- массовое редактирование ---
+    def open_bulk_edit(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo("Массовое редактирование",
+                                "Сначала выделите одну или несколько строк в таблице.\n"
+                                "Ctrl+клик — добавить к выделению, Shift+клик — диапазон, "
+                                "Ctrl+A — все.")
+            return
+        # убедимся, что выделенные индексы валидны
+        indices = sorted(int(i) for i in selected if 0 <= int(i) < len(self.records))
+        if not indices:
+            messagebox.showinfo("Массовое редактирование", "Выделенные строки пусты.")
+            return
+
+        # если в форме есть несохранённые правки текущей записи — зафиксируем
+        self._commit_editor_to_current()
+
+        BulkEditDialog(self, len(indices),
+                       lambda changes, idxs=indices: self._apply_bulk(changes, idxs))
+
+    def _apply_bulk(self, changes: OrderedDict, indices):
+        """Применяет changes ко всем записям с индексами из indices."""
+        # 1) распарсим и приведём значения по типам исходного поля
+        prepared = OrderedDict()
+        for k, raw in changes.items():
+            # возьмём тип-образец из первой записи
+            sample = self.records[indices[0]].get(k)
+            if k == "mode":
+                prepared[k] = mode_from_label(raw)
+            elif k == "step_index":
+                prepared[k] = step_from_label(raw)
+            elif k == "agc_mode":
+                prepared[k] = agc_from_label(raw)
+            elif k == "sql_en":
+                prepared[k] = sqlen_from_label(raw)
+            elif k == "name":
+                prepared[k] = truncate_name(raw)
+            elif k == "freq":
+                prepared[k] = parse_int_thousands(raw)
+            else:
+                prepared[k] = self._coerce(raw, sample)
+
+        # 2) применим ко всем выделенным записям (page потом пересчитаем)
+        for idx in indices:
+            rec = self.records[idx]
+            for k, v in prepared.items():
+                rec[k] = v
+
+        # 3) page — всегда актуален
+        apply_pages(self.records)
+
+        # 4) обновим таблицу
+        self._refresh_list(select_index=self.current_index if self.current_index is not None else None)
+
+        # 5) обновим правую панель, если текущая запись попала под изменения
+        if self.current_index is not None and self.current_index in indices:
+            self._load_record_to_editor(self.records[self.current_index])
+
+        self._update_status(f"Массово изменено записей: {len(indices)}; полей: {len(prepared)}")
+
+    # --- переключение показа скрытых полей ---
     def _on_toggle_hidden(self):
         if self.current_index is not None:
             self._commit_editor_to_current()
             self._load_record_to_editor(self.records[self.current_index])
-        if self.show_hidden.get():
-            self._update_status("Режим: показаны скрытые поля")
-        else:
-            self._update_status("Режим: скрытые поля спрятаны")
+        self._update_status("Режим: показаны скрытые поля"
+                            if self.show_hidden.get() else
+                            "Режим: скрытые поля спрятаны")
 
     def show_legend(self):
         win = tk.Toplevel(self)
@@ -331,18 +557,13 @@ class Editor(tk.Tk):
 
         top = ttk.Frame(win)
         top.pack(fill=tk.X, padx=6, pady=6)
-
         ttk.Label(top, text="Поиск:").pack(side=tk.LEFT)
         search_var = tk.StringVar()
         ttk.Entry(top, textvariable=search_var, width=30).pack(side=tk.LEFT, padx=(4, 0))
-
-        info = ttk.Label(
-            top,
-            text="  Основано на регламенте IARU R1 (включает РФ), вещательных сетках "
-                 "и Решениях ГКРЧ. Частоты могут отличаться по регионам и разрешениям.",
-            foreground="gray",
-        )
-        info.pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(top, foreground="gray",
+                  text="  Основано на регламенте IARU R1 (включает РФ), вещательных сетках "
+                       "и Решениях ГКРЧ. Частоты могут отличаться по регионам и разрешениям."
+                  ).pack(side=tk.LEFT, padx=(12, 0))
 
         cols = ("band", "freq", "purpose", "mode", "step")
         headers = ("Диапазон", "Частоты", "Назначение (РФ)", "Модуляция", "Шаг")
@@ -351,12 +572,10 @@ class Editor(tk.Tk):
         for c, h, w in zip(cols, headers, widths):
             tree.heading(c, text=h)
             tree.column(c, width=w, anchor="w")
-
         vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
         vsb.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, 6))
-
         tree.tag_configure("even", background="#F7F9FF")
         tree.tag_configure("odd",  background="#FFFFFF")
 
@@ -364,17 +583,13 @@ class Editor(tk.Tk):
             tree.delete(*tree.get_children())
             ft = filter_text.strip().lower()
             for i, row in enumerate(BAND_GUIDE):
-                joined = " ".join(row).lower()
-                if ft and ft not in joined:
+                if ft and ft not in " ".join(row).lower():
                     continue
                 tree.insert("", "end", values=row,
                             tags=("even" if i % 2 == 0 else "odd",))
-
         fill()
         search_var.trace_add("write", lambda *_: fill(search_var.get()))
-
-        ttk.Button(win, text="Закрыть", command=win.destroy
-                   ).pack(side=tk.BOTTOM, pady=(0, 6))
+        ttk.Button(win, text="Закрыть", command=win.destroy).pack(side=tk.BOTTOM, pady=(0, 6))
 
     def _build_fields_placeholder(self):
         for w in self.fields_frame.winfo_children():
@@ -441,6 +656,7 @@ class Editor(tk.Tk):
         self.on_save()
 
     def _refresh_list(self, select_index=None):
+        selected_before = set(self.tree.selection())
         self.tree.delete(*self.tree.get_children())
         for i, rec in enumerate(self.records):
             group_idx = (i // GROUP_SIZE) % len(GROUP_COLORS)
@@ -459,9 +675,12 @@ class Editor(tk.Tk):
                         self._sql_display(rec.get("sql_en")),
                         rec.get("sql_thresh", "")),
                 tags=(f"group{group_idx}",))
+        # восстановить выделение
+        if selected_before:
+            self.tree.selection_set(tuple(selected_before))
         if select_index is not None and 0 <= select_index < len(self.records):
             iid = str(select_index)
-            self.tree.selection_set(iid); self.tree.focus(iid); self.tree.see(iid)
+            self.tree.focus(iid); self.tree.see(iid)
 
     @staticmethod
     def _mode_display(code):
@@ -494,7 +713,9 @@ class Editor(tk.Tk):
     def on_select(self, _event=None):
         sel = self.tree.selection()
         if not sel: return
-        idx = int(sel[0])
+        # при множественном выделении для редактирования в правой панели
+        # берём последний/первый — точнее, первый по порядку в таблице
+        idx = int(min(int(i) for i in sel))
         if idx == self.current_index: return
         self._commit_editor_to_current()
         self.current_index = idx
@@ -586,6 +807,7 @@ class Editor(tk.Tk):
                        "sql_en: 0 — OFF, 1 — ON.  "
                        f"name: не более {NAME_MAX_LEN} символов.  "
                        "freq: можно вводить с пробелами или без — сохраняется числом.  "
+                       "Для массовой замены: выделите строки (Ctrl/Shift) и нажмите «✏ Массовое…».  "
                        + note,
                   foreground="gray", wraplength=780
                   ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
@@ -604,8 +826,6 @@ class Editor(tk.Tk):
         widget.configure(validate="key", validatecommand=vcmd)
 
     def _attach_freq_formatting(self, widget, var):
-        """Разрешаем вводить только цифры/пробелы; после ввода переформатируем по 3 разряда."""
-        # валидатор на ввод — цифры, пробел и (на случай вставки) разделители
         def on_validate(proposed: str):
             if proposed == "":
                 return True
@@ -622,22 +842,17 @@ class Editor(tk.Tk):
         def reformat(event=None):
             raw = var.get()
             parsed = parse_int_thousands(raw)
-            if isinstance(parsed, int):
-                new_text = format_int_thousands(parsed)
-            else:
-                # если не число — оставляем как есть
+            if not isinstance(parsed, int):
                 return
+            new_text = format_int_thousands(parsed)
             if new_text == raw:
                 return
-            # сохраняем позицию курсора примерно там же
             try:
                 cur = widget.index(tk.INSERT)
             except tk.TclError:
                 cur = len(raw)
-            # сколько цифр слева от курсора
             digits_before = sum(1 for ch in raw[:cur] if ch.isdigit())
             var.set(new_text)
-            # найти позицию в новом тексте, где столько же цифр слева
             count = 0
             new_cur = len(new_text)
             for i, ch in enumerate(new_text):
@@ -742,9 +957,31 @@ class Editor(tk.Tk):
         self._update_status("Запись дублирована")
 
     def on_delete(self):
-        if self.current_index is None: return
+        sel = self.tree.selection()
+        if not sel:
+            return
+        if len(sel) > 1:
+            if not messagebox.askyesno("Удалить",
+                                       f"Удалить {len(sel)} записей?"):
+                return
+            idxs = sorted((int(i) for i in sel), reverse=True)
+            for i in idxs:
+                if 0 <= i < len(self.records):
+                    del self.records[i]
+            self.current_index = None
+            apply_pages(self.records)
+            self._refresh_list(select_index=min(idxs[-1], len(self.records) - 1)
+                               if self.records else None)
+            if self.records:
+                self.tree.selection_set(str(min(idxs[-1], len(self.records) - 1)))
+                self.on_select()
+            else:
+                self._build_fields_placeholder()
+            self._update_status(f"Удалено записей: {len(sel)}")
+            return
+        # одиночное удаление
         if not messagebox.askyesno("Удалить", "Удалить выбранную запись?"): return
-        idx = self.current_index
+        idx = int(sel[0])
         del self.records[idx]
         apply_pages(self.records)
         self.current_index = None
