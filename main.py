@@ -11,11 +11,11 @@
 - Легенда-подсказка: диапазоны частот (РФ), назначение, модуляция, шаг
 - freq отображается с разделением по 3 знака (пробелом), в файл пишется числом
 - Множественное выделение и массовая замена значений (кнопка "✏ Массовое…")
+- Подсказки к полям — третья колонка в форме справа
 """
 
 import json
 import re
-import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -30,7 +30,7 @@ HIDDEN_FIELDS = {
     "res_1", "res_2", "res_3", "res_4", "res_5",
     "filter_type", "lna_grid", "mixer_gr",
     "rf_gain", "lna_en", "ssbtype", "pan_wide",
-    "page",
+    "page", "agc_thresh_dB", "agc_gain_dB",
 }
 
 GROUP_COLORS = [
@@ -49,6 +49,33 @@ STEP_MAP = {
 }
 AGC_MAP = {2: "AGC-M", 3: "AGC-S"}
 SQL_EN_MAP = {0: "OFF", 1: "ON"}
+
+# ---------- Описания полей (для подсказок в форме) ----------
+FIELD_DESCRIPTIONS = {
+    "name":          "Имя ячейки (≤ 8 символов)",
+    "page":          "Страница памяти (авто)",
+    "freq":          "Частота, Гц",
+    "mode":          "Вид модуляции",
+    "step_index":    "Шаг перестройки",
+    "filter_type":   "Тип фильтра",
+    "lna_grid":      "Состояние LNA",
+    "mixer_gr":      "Усиление смесителя",
+    "agc_mode":      "Режим АРУ",
+    "agc_thresh_dB": "Порог АРУ, дБ",
+    "agc_gain_dB":   "Усиление АРУ, дБ",
+    "rf_gain":       "Усиление ВЧ-тракта",
+    "lna_en":        "Включение LNA",
+    "ssbtype":       "Тип SSB",
+    "pan_wide":      "Ширина панорамы",
+    "skip_scan":     "Пропускать при сканировании",
+    "sql_en":        "Шумоподавитель",
+    "sql_thresh":    "Порог шумоподавителя",
+    "res_1":         "Резерв",
+    "res_2":         "Резерв",
+    "res_3":         "Резерв",
+    "res_4":         "Резерв",
+    "res_5":         "Резерв",
+}
 
 # ---------- Справочник диапазонов (РФ) ----------
 BAND_GUIDE = [
@@ -395,7 +422,7 @@ class Editor(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MT_DEFAULT.txt редактор")
-        self.geometry("1520x720")
+        self.geometry("1620x760")
 
         self.records = []
         self.path = None
@@ -726,13 +753,17 @@ class Editor(tk.Tk):
                                 f"{raw_name!r} → {short_name!r}")
 
         show_hidden = self.show_hidden.get()
+
+        # столбцы: 0 — имя поля, 1 — виджет, 2 — описание
+        self.fields_frame.columnconfigure(1, weight=1)
+
         row = 0
         for k, v in rec.items():
             if k in HIDDEN_FIELDS and not show_hidden:
                 continue
 
             label_fg = "gray" if k in HIDDEN_FIELDS else "black"
-            ttk.Label(self.fields_frame, text=k, width=18, anchor="w",
+            ttk.Label(self.fields_frame, text=k, width=16, anchor="w",
                       foreground=label_fg
                       ).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
 
@@ -771,10 +802,17 @@ class Editor(tk.Tk):
             widget.grid(row=row, column=1, sticky="ew", pady=2)
             self.field_vars[k] = var
             self.field_widgets[k] = widget
+
+            # описание справа
+            desc_text = FIELD_DESCRIPTIONS.get(k, "")
+            desc_fg = "gray" if k in HIDDEN_FIELDS else "#555555"
+            ttk.Label(self.fields_frame, text=desc_text, anchor="w",
+                      foreground=desc_fg
+                      ).grid(row=row, column=2, sticky="w", padx=(10, 0), pady=2)
+
             row += 1
 
-        self.fields_frame.columnconfigure(1, weight=1)
-
+        # счётчик для name
         self._name_counter = ttk.Label(
             self.fields_frame,
             text=self._name_counter_text(self.field_vars.get("name")),
@@ -801,8 +839,8 @@ class Editor(tk.Tk):
                        "freq: можно вводить с пробелами или без — сохраняется числом.  "
                        "Для массовой замены: выделите строки (Ctrl/Shift) и нажмите «✏ Массовое…».  "
                        + note,
-                  foreground="gray", wraplength=780
-                  ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                  foreground="gray", wraplength=980, justify="left"
+                  ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     @staticmethod
     def _name_counter_text(var):
