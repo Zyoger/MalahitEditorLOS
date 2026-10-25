@@ -11,10 +11,15 @@
 - Легенда-подсказка: диапазоны частот (РФ), назначение, модуляция, шаг
 - freq отображается с разделением по 3 знака (пробелом), в файл пишется числом
 - Множественное выделение и массовая замена значений (кнопка "✏ Массовое…")
+- Кнопка "📄 Инструкция" — открывает PDF, упакованный в exe или лежащий рядом
 """
 
 import json
+import os
 import re
+import sys
+import platform
+import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -25,12 +30,13 @@ NAME_MAX_LEN = 8
 MAX_RECORDS = 50
 GROUP_SIZE = 10
 
-# Поля, скрытые по умолчанию в форме (но сохраняемые в файл)
+MANUAL_FILENAME = "manual_malahiteam_rus_110426.pdf"
+
 HIDDEN_FIELDS = {
     "res_1", "res_2", "res_3", "res_4", "res_5",
     "filter_type", "lna_grid", "mixer_gr",
     "rf_gain", "lna_en", "ssbtype", "pan_wide",
-    "page", "agc_thresh_dB", "agc_gain_dB",
+    "page",
 }
 
 GROUP_COLORS = [
@@ -39,34 +45,6 @@ GROUP_COLORS = [
 ]
 
 MODE_MAP = {0: "USB", 1: "LSB", 2: "AM", 3: "NFM", 4: "WFM"}
-
-# ---------- Описания полей (для подсказок в форме) ----------
-FIELD_DESCRIPTIONS = {
-    "name":          "Имя ячейки (≤ 8 символов)",
-    "page":          "Страница памяти (авто)",
-    "freq":          "Частота, Гц",
-    "mode":          "Вид модуляции",
-    "step_index":    "Шаг перестройки",
-    "filter_type":   "Тип фильтра (вероятно лучше не менять)",
-    "lna_grid":      "Состояние LNA (вероятно лучше не менять)",
-    "mixer_gr":      "Усиление смесителя (вероятно лучше не менять)",
-    "agc_mode":      "Режим АРУ",
-    "agc_thresh_dB": "Порог АРУ, дБ (вероятно лучше не менять)",
-    "agc_gain_dB":   "Усиление АРУ, дБ (вероятно лучше не менять)",
-    "rf_gain":       "Усиление ВЧ-тракта (вероятно лучше не менять)",
-    "lna_en":        "Включение LNA (вероятно лучше не менять)",
-    "ssbtype":       "Тип SSB (вероятно лучше не менять)",
-    "pan_wide":      "Ширина панорамы (вероятно лучше не менять)",
-    "skip_scan":     "Пропускать при сканировании",
-    "sql_en":        "Шумоподавитель",
-    "sql_thresh":    "Порог шумоподавителя",
-    "res_1":         "Резерв",
-    "res_2":         "Резерв",
-    "res_3":         "Резерв",
-    "res_4":         "Резерв",
-    "res_5":         "Резерв",
-}
-
 STEP_MAP = {
     2: "1 кГц (LW/MW)",
     3: "2.5 кГц (КВ)",
@@ -79,9 +57,7 @@ AGC_MAP = {2: "AGC-M", 3: "AGC-S"}
 SQL_EN_MAP = {0: "OFF", 1: "ON"}
 
 # ---------- Справочник диапазонов (РФ) ----------
-# (диапазон, частоты, назначение, модуляция, шаг)
 BAND_GUIDE = [
-    # --- ДВ / СВ / КВ вещание и любительские ---
     ("LW (ДВ)",         "148.5 – 283.5 кГц",   "Вещание, дальнее прохождение",             "AM",                  "1 кГц"),
     ("MW (СВ)",         "526.5 – 1606.5 кГц",  "Вещание",                                  "AM",                  "1 кГц (сетка 9 кГц)"),
     ("160 m",           "1.810 – 2.000 МГц",   "Любительский, ночное прохождение",         "LSB, CW",             "1 кГц"),
@@ -105,36 +81,41 @@ BAND_GUIDE = [
     ("12 m",            "24.890 – 24.990 МГц", "Любительский",                             "USB, CW",             "1 кГц"),
     ("11 m",            "25.600 – 26.100 МГц", "Вещание / CB (ограниченно в РФ)",          "AM",                  "5 кГц"),
 
-    # --- CB 27 МГц ---
     ("CB (27 МГц)",     "26.965 – 27.405 МГц", "Си-Би, дальнобойщики (27.135 МГц)",        "AM, FM",              "10 кГц"),
 
-    # --- Любительские УКВ ---
     ("10 m",            "28.000 – 29.700 МГц", "Любительский",                             "USB, CW, FM (29.6)",  "1 кГц"),
     ("6 m",             "50.000 – 54.000 МГц", "Любительский (с разрешения)",              "USB, CW, FM",         "2.5 кГц"),
     ("OIRT FM",         "65.8 – 74.0 МГц",     "Вещание OIRT (в РФ почти не используется)", "WFM",                "30/50 кГц"),
     ("VHF FM (CCIR)",   "87.5 – 108.0 МГц",    "Вещание (в РФ: 87.5 – 108)",               "WFM",                 "50 кГц"),
 
-    # --- Авиация ---
     ("AIR",             "118.0 – 137.0 МГц",   "Авиационная связь",                        "AM",                  "25 кГц"),
 
-    # --- Метеоспутники ---
     ("Meteo Sat",       "137.0 – 138.0 МГц",   "Приём метеоспутников (NOAA/Метеор, APT/LRPT)", "NFM",             "25 кГц"),
 
-    # --- Любительские УКВ ---
     ("2 m",             "144.0 – 146.0 МГц",   "Любительский",                             "NFM, USB, CW",        "12.5/25 кГц"),
 
-    # --- Железнодорожная связь ---
     ("RZD",             "151.7125 – 156.0125 МГц", "Железнодорожная радиосвязь (РЖД)",     "NFM",                 "12.5 кГц"),
 
-    # --- Морская и речная связь ---
     ("Marine VHF",      "156.0 – 174.0 МГц",   "Морская подвижная служба (16 канал = 156.8 МГц, 70 канал = 156.525 МГц ЦИВ)", "NFM", "25 кГц"),
     ("River VHF",       "300.0125 – 300.5125 МГц", "Речная связь (бедствие на 300.2 МГц)", "NFM",                 "12.5 кГц"),
 
-    # --- LPD / PMR (безлицензионные) ---
     ("LPD",             "433.075 – 434.775 МГц","Маломощные безлицензионные (LPD)",        "NFM",                 "12.5 кГц"),
     ("70 cm",           "430.0 – 440.0 МГц",   "Любительский",                             "NFM, USB, CW",        "12.5/25 кГц"),
     ("PMR",             "446.00625 – 446.09375 МГц", "Маломощные безлицензионные (PMR)",  "NFM",                 "12.5 кГц"),
 ]
+
+
+# ---------- Пути к ресурсам (для сборки в один файл) ----------
+def _resource_path(relative: str) -> Path:
+    """
+    Возвращает путь к ресурсу.
+    - Если программа запущена из .exe, собранного PyInstaller --onefile,
+      ресурсы лежат в sys._MEIPASS (временная папка распаковки).
+    - Иначе — относительно main.py.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative
+    return Path(__file__).resolve().parent / relative
 
 
 # ---------- Преобразования mode ----------
@@ -276,8 +257,6 @@ def save_file(path: Path, records):
 
 # ---------- Диалог массового редактирования ----------
 class BulkEditDialog(tk.Toplevel):
-    """Диалог: выбрать поля и задать новые значения для всех выделенных записей."""
-
     VISIBLE_ORDER = [
         "name", "freq", "mode", "step_index", "agc_mode",
         "agc_thresh_dB", "agc_gain_dB", "skip_scan",
@@ -402,13 +381,13 @@ class BulkEditDialog(tk.Toplevel):
 
         self._inner.columnconfigure(2, weight=1)
 
-        hint = ttk.Label(
+        ttk.Label(
             self._inner,
             text="Будут изменены только отмеченные поля. Пустое значение — ввести пустую строку.\n"
                  "Для mode/step_index/agc_mode/sql_en выберите из списка. "
                  "page всё равно пересчитается автоматически.",
-            foreground="gray", wraplength=560, justify="left")
-        hint.grid(row=len(keys), column=0, columnspan=3, sticky="w", pady=(8, 0))
+            foreground="gray", wraplength=560, justify="left"
+        ).grid(row=len(keys), column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     @staticmethod
     def _validate_freq_input(proposed: str):
@@ -470,6 +449,7 @@ class Editor(tk.Tk):
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Button(toolbar, text="✏ Массовое…", command=self.open_bulk_edit).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="📖 Легенда", command=self.show_legend).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(toolbar, text="📄 Инструкция", command=self.open_manual).pack(side=tk.LEFT, padx=(8, 0))
 
         self._hidden_btn = ttk.Checkbutton(
             toolbar, text="👁 Скрытые поля",
@@ -516,6 +496,69 @@ class Editor(tk.Tk):
         self.status = tk.StringVar(value="Файл не загружен")
         ttk.Label(self, textvariable=self.status, anchor="w", relief=tk.SUNKEN
                   ).pack(side=tk.BOTTOM, fill=tk.X)
+
+    # --- Инструкция ---
+    def _manual_candidates(self):
+        """Возвращает список возможных путей к PDF-инструкции."""
+        candidates = []
+
+        # 1) Упакован внутрь exe (PyInstaller --onefile)
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            candidates.append(Path(sys._MEIPASS) / "docs" / MANUAL_FILENAME)
+            candidates.append(Path(sys._MEIPASS) / MANUAL_FILENAME)
+
+        # 2) Рядом с exe / рядом с main.py
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+        else:
+            base = Path(__file__).resolve().parent
+
+        candidates.append(base / "docs" / MANUAL_FILENAME)
+        candidates.append(base / MANUAL_FILENAME)
+        candidates.append(base.parent / "docs" / MANUAL_FILENAME)
+        candidates.append(base.parent / MANUAL_FILENAME)
+
+        # 3) Текущая рабочая директория
+        candidates.append(Path.cwd() / "docs" / MANUAL_FILENAME)
+        candidates.append(Path.cwd() / MANUAL_FILENAME)
+
+        return candidates
+
+    def open_manual(self):
+        """Открывает PDF-инструкцию системным просмотрщиком."""
+        path = None
+        for cand in self._manual_candidates():
+            if cand.is_file():
+                path = cand
+                break
+
+        if path is None:
+            messagebox.showerror(
+                "Инструкция не найдена",
+                f"Файл {MANUAL_FILENAME} не найден.\n\n"
+                f"Если вы используете .exe — файл должен быть упакован внутрь.\n"
+                f"Если запускаете из исходников — положите PDF в папку docs/ "
+                f"рядом с main.py.\n\n"
+                f"Проверены пути:\n" +
+                "\n".join(f"— {p}" for p in self._manual_candidates()[:4]),
+            )
+            return
+
+        try:
+            if platform.system() == "Windows":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.Popen(["open", str(path)])
+            else:  # Linux / BSD
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as e:
+            messagebox.showerror(
+                "Ошибка открытия",
+                f"Не удалось открыть файл:\n{path}\n\n{e}",
+            )
+            return
+
+        self._update_status(f"Открыта инструкция: {path}")
 
     # --- массовое редактирование ---
     def open_bulk_edit(self):
@@ -764,8 +807,7 @@ class Editor(tk.Tk):
     def _load_record_to_editor(self, rec: OrderedDict):
         for w in self.fields_frame.winfo_children():
             w.destroy()
-        self.field_vars.clear();
-        self.field_widgets.clear()
+        self.field_vars.clear(); self.field_widgets.clear()
         self._name_counter = None
 
         raw_name = rec.get("name")
@@ -775,22 +817,16 @@ class Editor(tk.Tk):
                                 f"{raw_name!r} → {short_name!r}")
 
         show_hidden = self.show_hidden.get()
-
-        # столбцы: 0 — имя поля, 1 — виджет, 2 — описание
-        self.fields_frame.columnconfigure(1, weight=1)
-
         row = 0
         for k, v in rec.items():
             if k in HIDDEN_FIELDS and not show_hidden:
                 continue
 
-            # имя поля: скрытые — серым, остальные — обычным
             label_fg = "gray" if k in HIDDEN_FIELDS else "black"
-            ttk.Label(self.fields_frame, text=k, width=16, anchor="w",
+            ttk.Label(self.fields_frame, text=k, width=18, anchor="w",
                       foreground=label_fg
                       ).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
 
-            # сам виджет
             if k == "mode":
                 var = tk.StringVar(value=mode_to_label(v))
                 widget = ttk.Combobox(self.fields_frame, textvariable=var,
@@ -826,22 +862,15 @@ class Editor(tk.Tk):
             widget.grid(row=row, column=1, sticky="ew", pady=2)
             self.field_vars[k] = var
             self.field_widgets[k] = widget
-
-            # описание справа от поля (для скрытых — тоже серым)
-            desc_text = FIELD_DESCRIPTIONS.get(k, "")
-            desc_fg = "gray" if k in HIDDEN_FIELDS else "#555555"
-            ttk.Label(self.fields_frame, text=desc_text, anchor="w",
-                      foreground=desc_fg
-                      ).grid(row=row, column=2, sticky="w", padx=(10, 0), pady=2)
-
             row += 1
 
-        # счётчик для name — под ним, во второй колонке
+        self.fields_frame.columnconfigure(1, weight=1)
+
         self._name_counter = ttk.Label(
             self.fields_frame,
             text=self._name_counter_text(self.field_vars.get("name")),
             foreground="gray")
-        self._name_counter.grid(row=row, column=1, sticky="w", pady=(4, 0))
+        self._name_counter.grid(row=row, column=1, sticky="w", pady=(8, 0))
         row += 1
 
         if "name" in self.field_vars:
@@ -850,9 +879,8 @@ class Editor(tk.Tk):
                 lambda *_: self._name_counter.config(
                     text=self._name_counter_text(self.field_vars["name"])))
 
-        # сводная подсказка внизу формы
         note = ("Серым помечены скрытые поля (режим «👁 Скрытые поля» включён). "
-                "page всё равно пересчитывается автоматически."
+                "page всё равно пересчитывается автоматически при сохранении."
                 if show_hidden else
                 "Часть технических полей скрыта. Нажмите «👁 Скрытые поля», чтобы показать их.")
         ttk.Label(self.fields_frame,
@@ -864,8 +892,8 @@ class Editor(tk.Tk):
                        "freq: можно вводить с пробелами или без — сохраняется числом.  "
                        "Для массовой замены: выделите строки (Ctrl/Shift) и нажмите «✏ Массовое…».  "
                        + note,
-                  foreground="gray", wraplength=900, justify="left"
-                  ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
+                  foreground="gray", wraplength=780
+                  ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     @staticmethod
     def _name_counter_text(var):
