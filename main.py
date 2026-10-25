@@ -11,15 +11,11 @@
 - Легенда-подсказка: диапазоны частот (РФ), назначение, модуляция, шаг
 - freq отображается с разделением по 3 знака (пробелом), в файл пишется числом
 - Множественное выделение и массовая замена значений (кнопка "✏ Массовое…")
-- Кнопка "📄 Инструкция" — открывает PDF, упакованный в exe или лежащий рядом
 """
 
 import json
-import os
 import re
 import sys
-import platform
-import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -29,8 +25,6 @@ from collections import OrderedDict
 NAME_MAX_LEN = 8
 MAX_RECORDS = 50
 GROUP_SIZE = 10
-
-MANUAL_FILENAME = "manual_malahiteam_rus_110426.pdf"
 
 HIDDEN_FIELDS = {
     "res_1", "res_2", "res_3", "res_4", "res_5",
@@ -80,42 +74,21 @@ BAND_GUIDE = [
     ("13 m",            "21.450 – 21.850 МГц", "Вещание",                                  "AM",                  "5 кГц"),
     ("12 m",            "24.890 – 24.990 МГц", "Любительский",                             "USB, CW",             "1 кГц"),
     ("11 m",            "25.600 – 26.100 МГц", "Вещание / CB (ограниченно в РФ)",          "AM",                  "5 кГц"),
-
     ("CB (27 МГц)",     "26.965 – 27.405 МГц", "Си-Би, дальнобойщики (27.135 МГц)",        "AM, FM",              "10 кГц"),
-
     ("10 m",            "28.000 – 29.700 МГц", "Любительский",                             "USB, CW, FM (29.6)",  "1 кГц"),
     ("6 m",             "50.000 – 54.000 МГц", "Любительский (с разрешения)",              "USB, CW, FM",         "2.5 кГц"),
     ("OIRT FM",         "65.8 – 74.0 МГц",     "Вещание OIRT (в РФ почти не используется)", "WFM",                "30/50 кГц"),
     ("VHF FM (CCIR)",   "87.5 – 108.0 МГц",    "Вещание (в РФ: 87.5 – 108)",               "WFM",                 "50 кГц"),
-
     ("AIR",             "118.0 – 137.0 МГц",   "Авиационная связь",                        "AM",                  "25 кГц"),
-
     ("Meteo Sat",       "137.0 – 138.0 МГц",   "Приём метеоспутников (NOAA/Метеор, APT/LRPT)", "NFM",             "25 кГц"),
-
     ("2 m",             "144.0 – 146.0 МГц",   "Любительский",                             "NFM, USB, CW",        "12.5/25 кГц"),
-
     ("RZD",             "151.7125 – 156.0125 МГц", "Железнодорожная радиосвязь (РЖД)",     "NFM",                 "12.5 кГц"),
-
     ("Marine VHF",      "156.0 – 174.0 МГц",   "Морская подвижная служба (16 канал = 156.8 МГц, 70 канал = 156.525 МГц ЦИВ)", "NFM", "25 кГц"),
     ("River VHF",       "300.0125 – 300.5125 МГц", "Речная связь (бедствие на 300.2 МГц)", "NFM",                 "12.5 кГц"),
-
     ("LPD",             "433.075 – 434.775 МГц","Маломощные безлицензионные (LPD)",        "NFM",                 "12.5 кГц"),
     ("70 cm",           "430.0 – 440.0 МГц",   "Любительский",                             "NFM, USB, CW",        "12.5/25 кГц"),
     ("PMR",             "446.00625 – 446.09375 МГц", "Маломощные безлицензионные (PMR)",  "NFM",                 "12.5 кГц"),
 ]
-
-
-# ---------- Пути к ресурсам (для сборки в один файл) ----------
-def _resource_path(relative: str) -> Path:
-    """
-    Возвращает путь к ресурсу.
-    - Если программа запущена из .exe, собранного PyInstaller --onefile,
-      ресурсы лежат в sys._MEIPASS (временная папка распаковки).
-    - Иначе — относительно main.py.
-    """
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / relative
-    return Path(__file__).resolve().parent / relative
 
 
 # ---------- Преобразования mode ----------
@@ -449,7 +422,6 @@ class Editor(tk.Tk):
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Button(toolbar, text="✏ Массовое…", command=self.open_bulk_edit).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="📖 Легенда", command=self.show_legend).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(toolbar, text="📄 Инструкция", command=self.open_manual).pack(side=tk.LEFT, padx=(8, 0))
 
         self._hidden_btn = ttk.Checkbutton(
             toolbar, text="👁 Скрытые поля",
@@ -496,69 +468,6 @@ class Editor(tk.Tk):
         self.status = tk.StringVar(value="Файл не загружен")
         ttk.Label(self, textvariable=self.status, anchor="w", relief=tk.SUNKEN
                   ).pack(side=tk.BOTTOM, fill=tk.X)
-
-    # --- Инструкция ---
-    def _manual_candidates(self):
-        """Возвращает список возможных путей к PDF-инструкции."""
-        candidates = []
-
-        # 1) Упакован внутрь exe (PyInstaller --onefile)
-        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-            candidates.append(Path(sys._MEIPASS) / "docs" / MANUAL_FILENAME)
-            candidates.append(Path(sys._MEIPASS) / MANUAL_FILENAME)
-
-        # 2) Рядом с exe / рядом с main.py
-        if getattr(sys, "frozen", False):
-            base = Path(sys.executable).resolve().parent
-        else:
-            base = Path(__file__).resolve().parent
-
-        candidates.append(base / "docs" / MANUAL_FILENAME)
-        candidates.append(base / MANUAL_FILENAME)
-        candidates.append(base.parent / "docs" / MANUAL_FILENAME)
-        candidates.append(base.parent / MANUAL_FILENAME)
-
-        # 3) Текущая рабочая директория
-        candidates.append(Path.cwd() / "docs" / MANUAL_FILENAME)
-        candidates.append(Path.cwd() / MANUAL_FILENAME)
-
-        return candidates
-
-    def open_manual(self):
-        """Открывает PDF-инструкцию системным просмотрщиком."""
-        path = None
-        for cand in self._manual_candidates():
-            if cand.is_file():
-                path = cand
-                break
-
-        if path is None:
-            messagebox.showerror(
-                "Инструкция не найдена",
-                f"Файл {MANUAL_FILENAME} не найден.\n\n"
-                f"Если вы используете .exe — файл должен быть упакован внутрь.\n"
-                f"Если запускаете из исходников — положите PDF в папку docs/ "
-                f"рядом с main.py.\n\n"
-                f"Проверены пути:\n" +
-                "\n".join(f"— {p}" for p in self._manual_candidates()[:4]),
-            )
-            return
-
-        try:
-            if platform.system() == "Windows":
-                os.startfile(str(path))  # type: ignore[attr-defined]
-            elif platform.system() == "Darwin":  # macOS
-                subprocess.Popen(["open", str(path)])
-            else:  # Linux / BSD
-                subprocess.Popen(["xdg-open", str(path)])
-        except Exception as e:
-            messagebox.showerror(
-                "Ошибка открытия",
-                f"Не удалось открыть файл:\n{path}\n\n{e}",
-            )
-            return
-
-        self._update_status(f"Открыта инструкция: {path}")
 
     # --- массовое редактирование ---
     def open_bulk_edit(self):
