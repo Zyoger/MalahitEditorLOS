@@ -25,6 +25,7 @@ NAME_MAX_LEN = 8
 MAX_RECORDS = 50
 GROUP_SIZE = 10
 
+# Поля, скрытые по умолчанию в форме (но сохраняемые в файл)
 HIDDEN_FIELDS = {
     "res_1", "res_2", "res_3", "res_4", "res_5",
     "filter_type", "lna_grid", "mixer_gr",
@@ -50,7 +51,9 @@ AGC_MAP = {2: "AGC-M", 3: "AGC-S"}
 SQL_EN_MAP = {0: "OFF", 1: "ON"}
 
 # ---------- Справочник диапазонов (РФ) ----------
+# (диапазон, частоты, назначение, модуляция, шаг)
 BAND_GUIDE = [
+    # --- ДВ / СВ / КВ вещание и любительские ---
     ("LW (ДВ)",         "148.5 – 283.5 кГц",   "Вещание, дальнее прохождение",             "AM",                  "1 кГц"),
     ("MW (СВ)",         "526.5 – 1606.5 кГц",  "Вещание",                                  "AM",                  "1 кГц (сетка 9 кГц)"),
     ("160 m",           "1.810 – 2.000 МГц",   "Любительский, ночное прохождение",         "LSB, CW",             "1 кГц"),
@@ -73,12 +76,33 @@ BAND_GUIDE = [
     ("13 m",            "21.450 – 21.850 МГц", "Вещание",                                  "AM",                  "5 кГц"),
     ("12 m",            "24.890 – 24.990 МГц", "Любительский",                             "USB, CW",             "1 кГц"),
     ("11 m",            "25.600 – 26.100 МГц", "Вещание / CB (ограниченно в РФ)",          "AM",                  "5 кГц"),
+
+    # --- CB 27 МГц ---
+    ("CB (27 МГц)",     "26.965 – 27.405 МГц", "Си-Би, дальнобойщики (27.135 МГц)",        "AM, FM",              "10 кГц"),
+
+    # --- Любительские УКВ ---
     ("10 m",            "28.000 – 29.700 МГц", "Любительский",                             "USB, CW, FM (29.6)",  "1 кГц"),
     ("6 m",             "50.000 – 54.000 МГц", "Любительский (с разрешения)",              "USB, CW, FM",         "2.5 кГц"),
     ("OIRT FM",         "65.8 – 74.0 МГц",     "Вещание OIRT (в РФ почти не используется)", "WFM",                "30/50 кГц"),
     ("VHF FM (CCIR)",   "87.5 – 108.0 МГц",    "Вещание (в РФ: 87.5 – 108)",               "WFM",                 "50 кГц"),
+
+    # --- Авиация ---
     ("AIR",             "118.0 – 137.0 МГц",   "Авиационная связь",                        "AM",                  "25 кГц"),
+
+    # --- Метеоспутники ---
+    ("Meteo Sat",       "137.0 – 138.0 МГц",   "Приём метеоспутников (NOAA/Метеор, APT/LRPT)", "NFM",             "25 кГц"),
+
+    # --- Любительские УКВ ---
     ("2 m",             "144.0 – 146.0 МГц",   "Любительский",                             "NFM, USB, CW",        "12.5/25 кГц"),
+
+    # --- Железнодорожная связь ---
+    ("RZD",             "151.7125 – 156.0125 МГц", "Железнодорожная радиосвязь (РЖД)",     "NFM",                 "12.5 кГц"),
+
+    # --- Морская и речная связь ---
+    ("Marine VHF",      "156.0 – 174.0 МГц",   "Морская подвижная служба (16 канал = 156.8 МГц, 70 канал = 156.525 МГц ЦИВ)", "NFM", "25 кГц"),
+    ("River VHF",       "300.0125 – 300.5125 МГц", "Речная связь (бедствие на 300.2 МГц)", "NFM",                 "12.5 кГц"),
+
+    # --- LPD / PMR (безлицензионные) ---
     ("LPD",             "433.075 – 434.775 МГц","Маломощные безлицензионные (LPD)",        "NFM",                 "12.5 кГц"),
     ("70 cm",           "430.0 – 440.0 МГц",   "Любительский",                             "NFM, USB, CW",        "12.5/25 кГц"),
     ("PMR",             "446.00625 – 446.09375 МГц", "Маломощные безлицензионные (PMR)",  "NFM",                 "12.5 кГц"),
@@ -226,7 +250,6 @@ def save_file(path: Path, records):
 class BulkEditDialog(tk.Toplevel):
     """Диалог: выбрать поля и задать новые значения для всех выделенных записей."""
 
-    # порядок полей в диалоге: сначала видимые, потом скрытые
     VISIBLE_ORDER = [
         "name", "freq", "mode", "step_index", "agc_mode",
         "agc_thresh_dB", "agc_gain_dB", "skip_scan",
@@ -255,14 +278,12 @@ class BulkEditDialog(tk.Toplevel):
                  "Отметьте поля, которые нужно заменить, и задайте новые значения.",
         ).pack(anchor="w")
 
-        # управление показом скрытых
         self.show_hidden = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             top, text="Показывать скрытые поля",
             variable=self.show_hidden, command=self._render,
         ).pack(anchor="w", pady=(6, 0))
 
-        # прокручиваемая область с чекбоксами и полями
         body = ttk.Frame(self)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
 
@@ -279,12 +300,10 @@ class BulkEditDialog(tk.Toplevel):
         self._canvas.bind("<Configure>",
                           lambda e: self._canvas.itemconfigure(self._inner_id, width=e.width))
 
-        # для каждого поля — свои переменные
-        self.field_enabled = OrderedDict()   # key -> BooleanVar
-        self.field_value = OrderedDict()     # key -> StringVar
-        self.field_widgets = OrderedDict()   # key -> widget
+        self.field_enabled = OrderedDict()
+        self.field_value = OrderedDict()
+        self.field_widgets = OrderedDict()
 
-        # кнопки
         btns = ttk.Frame(self)
         btns.pack(fill=tk.X, padx=8, pady=(0, 8))
         ttk.Button(btns, text="Применить", command=self._on_apply).pack(side=tk.RIGHT)
@@ -309,15 +328,13 @@ class BulkEditDialog(tk.Toplevel):
         for row, k in enumerate(keys):
             is_hidden = k in self.HIDDEN_ORDER
 
-            # чекбокс
             if k not in self.field_enabled:
                 self.field_enabled[k] = tk.BooleanVar(value=False)
             if k not in self.field_value:
                 self.field_value[k] = tk.StringVar(value="")
 
             cb = ttk.Checkbutton(self._inner, text="",
-                                 variable=self.field_enabled[k],
-                                 command=self._on_toggle_field)
+                                 variable=self.field_enabled[k])
             cb.grid(row=row, column=0, sticky="w", padx=(0, 4), pady=2)
 
             lbl_fg = "gray" if is_hidden else "black"
@@ -325,7 +342,6 @@ class BulkEditDialog(tk.Toplevel):
                       foreground=lbl_fg
                       ).grid(row=row, column=1, sticky="w", padx=(0, 6), pady=2)
 
-            # поле значения — по типу
             if k == "mode":
                 widget = ttk.Combobox(
                     self._inner, textvariable=self.field_value[k], state="readonly",
@@ -344,7 +360,6 @@ class BulkEditDialog(tk.Toplevel):
                     values=[sqlen_to_label(c) for c in SQL_EN_MAP])
             elif k == "name":
                 widget = ttk.Entry(self._inner, textvariable=self.field_value[k])
-                # та же валидация 8 символов
                 vcmd = (self.register(lambda p: len(p) <= NAME_MAX_LEN), "%P")
                 widget.configure(validate="key", validatecommand=vcmd)
             elif k == "freq":
@@ -359,7 +374,6 @@ class BulkEditDialog(tk.Toplevel):
 
         self._inner.columnconfigure(2, weight=1)
 
-        # подсказка внизу
         hint = ttk.Label(
             self._inner,
             text="Будут изменены только отмеченные поля. Пустое значение — ввести пустую строку.\n"
@@ -379,12 +393,8 @@ class BulkEditDialog(tk.Toplevel):
             return True
         return cleaned.lstrip("-").isdigit()
 
-    def _on_toggle_field(self):
-        # можно оставить пустым — просто визуальное включение поля
-        pass
-
     def _clear_all(self):
-        for k, v in self.field_enabled.items():
+        for v in self.field_enabled.values():
             v.set(False)
 
     def _on_apply(self):
@@ -449,7 +459,7 @@ class Editor(tk.Tk):
 
         cols = ("#", "name", "page", "freq", "mode", "step", "agc", "sql", "sql_thresh")
         self.tree = ttk.Treeview(left, columns=cols, show="headings",
-                                 selectmode="extended")   # ← множественное выделение
+                                 selectmode="extended")
         widths = (40, 140, 50, 130, 70, 140, 90, 70, 100)
         headers = ("#", "name", "page", "freq", "mode", "step", "agc", "sql", "sql_thresh")
         for c, h, w in zip(cols, headers, widths):
@@ -488,24 +498,18 @@ class Editor(tk.Tk):
                                 "Ctrl+клик — добавить к выделению, Shift+клик — диапазон, "
                                 "Ctrl+A — все.")
             return
-        # убедимся, что выделенные индексы валидны
         indices = sorted(int(i) for i in selected if 0 <= int(i) < len(self.records))
         if not indices:
             messagebox.showinfo("Массовое редактирование", "Выделенные строки пусты.")
             return
 
-        # если в форме есть несохранённые правки текущей записи — зафиксируем
         self._commit_editor_to_current()
-
         BulkEditDialog(self, len(indices),
                        lambda changes, idxs=indices: self._apply_bulk(changes, idxs))
 
     def _apply_bulk(self, changes: OrderedDict, indices):
-        """Применяет changes ко всем записям с индексами из indices."""
-        # 1) распарсим и приведём значения по типам исходного поля
         prepared = OrderedDict()
         for k, raw in changes.items():
-            # возьмём тип-образец из первой записи
             sample = self.records[indices[0]].get(k)
             if k == "mode":
                 prepared[k] = mode_from_label(raw)
@@ -522,19 +526,14 @@ class Editor(tk.Tk):
             else:
                 prepared[k] = self._coerce(raw, sample)
 
-        # 2) применим ко всем выделенным записям (page потом пересчитаем)
         for idx in indices:
             rec = self.records[idx]
             for k, v in prepared.items():
                 rec[k] = v
 
-        # 3) page — всегда актуален
         apply_pages(self.records)
-
-        # 4) обновим таблицу
         self._refresh_list(select_index=self.current_index if self.current_index is not None else None)
 
-        # 5) обновим правую панель, если текущая запись попала под изменения
         if self.current_index is not None and self.current_index in indices:
             self._load_record_to_editor(self.records[self.current_index])
 
@@ -656,12 +655,9 @@ class Editor(tk.Tk):
         self.on_save()
 
     def _refresh_list(self, select_index=None):
-        # запомним выделение до перерисовки
         selected_before = set(self.tree.selection())
-
         self.tree.delete(*self.tree.get_children())
 
-        # заново наполняем таблицу; попутно собираем множество существующих iid
         existing_iids = set()
         for i, rec in enumerate(self.records):
             iid = str(i)
@@ -683,22 +679,18 @@ class Editor(tk.Tk):
                         rec.get("sql_thresh", "")),
                 tags=(f"group{group_idx}",))
 
-        # восстановим только те iid, которые реально существуют
         valid_selection = tuple(i for i in selected_before if i in existing_iids)
         if valid_selection:
             try:
                 self.tree.selection_set(valid_selection)
             except tk.TclError:
-                # страховка: если что-то всё же пошло не так — просто не выделяем
                 pass
 
-        # фокус/скролл на запрошенную запись (если задана и валидна)
         if select_index is not None and 0 <= select_index < len(self.records):
             iid = str(select_index)
             try:
                 self.tree.focus(iid)
                 self.tree.see(iid)
-                # если ничего не было выделено — выделим хотя бы эту запись
                 if not valid_selection:
                     self.tree.selection_set(iid)
             except tk.TclError:
@@ -735,8 +727,6 @@ class Editor(tk.Tk):
     def on_select(self, _event=None):
         sel = self.tree.selection()
         if not sel: return
-        # при множественном выделении для редактирования в правой панели
-        # берём последний/первый — точнее, первый по порядку в таблице
         idx = int(min(int(i) for i in sel))
         if idx == self.current_index: return
         self._commit_editor_to_current()
@@ -1001,7 +991,6 @@ class Editor(tk.Tk):
                 self._build_fields_placeholder()
             self._update_status(f"Удалено записей: {len(sel)}")
             return
-        # одиночное удаление
         if not messagebox.askyesno("Удалить", "Удалить выбранную запись?"): return
         idx = int(sel[0])
         del self.records[idx]
