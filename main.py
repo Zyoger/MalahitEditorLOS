@@ -656,15 +656,22 @@ class Editor(tk.Tk):
         self.on_save()
 
     def _refresh_list(self, select_index=None):
+        # запомним выделение до перерисовки
         selected_before = set(self.tree.selection())
+
         self.tree.delete(*self.tree.get_children())
+
+        # заново наполняем таблицу; попутно собираем множество существующих iid
+        existing_iids = set()
         for i, rec in enumerate(self.records):
+            iid = str(i)
+            existing_iids.add(iid)
             group_idx = (i // GROUP_SIZE) % len(GROUP_COLORS)
             freq_val = rec.get("freq", "")
             freq_disp = (format_int_thousands(freq_val)
                          if isinstance(freq_val, int) else str(freq_val))
             self.tree.insert(
-                "", "end", iid=str(i),
+                "", "end", iid=iid,
                 values=(i + 1,
                         rec.get("name", ""),
                         rec.get("page", ""),
@@ -675,12 +682,27 @@ class Editor(tk.Tk):
                         self._sql_display(rec.get("sql_en")),
                         rec.get("sql_thresh", "")),
                 tags=(f"group{group_idx}",))
-        # восстановить выделение
-        if selected_before:
-            self.tree.selection_set(tuple(selected_before))
+
+        # восстановим только те iid, которые реально существуют
+        valid_selection = tuple(i for i in selected_before if i in existing_iids)
+        if valid_selection:
+            try:
+                self.tree.selection_set(valid_selection)
+            except tk.TclError:
+                # страховка: если что-то всё же пошло не так — просто не выделяем
+                pass
+
+        # фокус/скролл на запрошенную запись (если задана и валидна)
         if select_index is not None and 0 <= select_index < len(self.records):
             iid = str(select_index)
-            self.tree.focus(iid); self.tree.see(iid)
+            try:
+                self.tree.focus(iid)
+                self.tree.see(iid)
+                # если ничего не было выделено — выделим хотя бы эту запись
+                if not valid_selection:
+                    self.tree.selection_set(iid)
+            except tk.TclError:
+                pass
 
     @staticmethod
     def _mode_display(code):
