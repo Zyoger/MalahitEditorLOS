@@ -39,6 +39,34 @@ GROUP_COLORS = [
 ]
 
 MODE_MAP = {0: "USB", 1: "LSB", 2: "AM", 3: "NFM", 4: "WFM"}
+
+# ---------- Описания полей (для подсказок в форме) ----------
+FIELD_DESCRIPTIONS = {
+    "name":          "Имя ячейки (≤ 8 символов)",
+    "page":          "Страница памяти (авто)",
+    "freq":          "Частота, Гц",
+    "mode":          "Вид модуляции",
+    "step_index":    "Шаг перестройки",
+    "filter_type":   "Тип фильтра",
+    "lna_grid":      "Состояние LNA",
+    "mixer_gr":      "Усиление смесителя",
+    "agc_mode":      "Режим АРУ",
+    "agc_thresh_dB": "Порог АРУ, дБ",
+    "agc_gain_dB":   "Усиление АРУ, дБ",
+    "rf_gain":       "Усиление ВЧ-тракта",
+    "lna_en":        "Включение LNA",
+    "ssbtype":       "Тип SSB",
+    "pan_wide":      "Ширина панорамы",
+    "skip_scan":     "Пропускать при сканировании",
+    "sql_en":        "Шумоподавитель",
+    "sql_thresh":    "Порог шумоподавителя",
+    "res_1":         "Резерв",
+    "res_2":         "Резерв",
+    "res_3":         "Резерв",
+    "res_4":         "Резерв",
+    "res_5":         "Резерв",
+}
+
 STEP_MAP = {
     2: "1 кГц (LW/MW)",
     3: "2.5 кГц (КВ)",
@@ -736,7 +764,8 @@ class Editor(tk.Tk):
     def _load_record_to_editor(self, rec: OrderedDict):
         for w in self.fields_frame.winfo_children():
             w.destroy()
-        self.field_vars.clear(); self.field_widgets.clear()
+        self.field_vars.clear();
+        self.field_widgets.clear()
         self._name_counter = None
 
         raw_name = rec.get("name")
@@ -746,16 +775,22 @@ class Editor(tk.Tk):
                                 f"{raw_name!r} → {short_name!r}")
 
         show_hidden = self.show_hidden.get()
+
+        # столбцы: 0 — имя поля, 1 — виджет, 2 — описание
+        self.fields_frame.columnconfigure(1, weight=1)
+
         row = 0
         for k, v in rec.items():
             if k in HIDDEN_FIELDS and not show_hidden:
                 continue
 
+            # имя поля: скрытые — серым, остальные — обычным
             label_fg = "gray" if k in HIDDEN_FIELDS else "black"
-            ttk.Label(self.fields_frame, text=k, width=18, anchor="w",
+            ttk.Label(self.fields_frame, text=k, width=16, anchor="w",
                       foreground=label_fg
                       ).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
 
+            # сам виджет
             if k == "mode":
                 var = tk.StringVar(value=mode_to_label(v))
                 widget = ttk.Combobox(self.fields_frame, textvariable=var,
@@ -791,15 +826,22 @@ class Editor(tk.Tk):
             widget.grid(row=row, column=1, sticky="ew", pady=2)
             self.field_vars[k] = var
             self.field_widgets[k] = widget
+
+            # описание справа от поля (для скрытых — тоже серым)
+            desc_text = FIELD_DESCRIPTIONS.get(k, "")
+            desc_fg = "gray" if k in HIDDEN_FIELDS else "#555555"
+            ttk.Label(self.fields_frame, text=desc_text, anchor="w",
+                      foreground=desc_fg
+                      ).grid(row=row, column=2, sticky="w", padx=(10, 0), pady=2)
+
             row += 1
 
-        self.fields_frame.columnconfigure(1, weight=1)
-
+        # счётчик для name — под ним, во второй колонке
         self._name_counter = ttk.Label(
             self.fields_frame,
             text=self._name_counter_text(self.field_vars.get("name")),
             foreground="gray")
-        self._name_counter.grid(row=row, column=1, sticky="w", pady=(8, 0))
+        self._name_counter.grid(row=row, column=1, sticky="w", pady=(4, 0))
         row += 1
 
         if "name" in self.field_vars:
@@ -808,8 +850,9 @@ class Editor(tk.Tk):
                 lambda *_: self._name_counter.config(
                     text=self._name_counter_text(self.field_vars["name"])))
 
+        # сводная подсказка внизу формы
         note = ("Серым помечены скрытые поля (режим «👁 Скрытые поля» включён). "
-                "page всё равно пересчитывается автоматически при сохранении."
+                "page всё равно пересчитывается автоматически."
                 if show_hidden else
                 "Часть технических полей скрыта. Нажмите «👁 Скрытые поля», чтобы показать их.")
         ttk.Label(self.fields_frame,
@@ -821,8 +864,8 @@ class Editor(tk.Tk):
                        "freq: можно вводить с пробелами или без — сохраняется числом.  "
                        "Для массовой замены: выделите строки (Ctrl/Shift) и нажмите «✏ Массовое…».  "
                        + note,
-                  foreground="gray", wraplength=780
-                  ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                  foreground="gray", wraplength=900, justify="left"
+                  ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     @staticmethod
     def _name_counter_text(var):
